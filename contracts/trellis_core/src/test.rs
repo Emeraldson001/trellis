@@ -162,6 +162,20 @@ fn test_happy_path() {
         &[symbol_short!("trls_crte")],
         "init must emit exactly one agreement_created event",
     );
+    // #460: the creation event must carry the token and total value, so an
+    // indexer does not need a follow-up `get_agreement`/`get_total_amount`.
+    let (event_payer, event_payee, event_token, event_total): (Address, Address, Address, i128) =
+        trellis_event_data(&env, &client.address, symbol_short!("trls_crte"));
+    assert_eq!(event_payer, payer, "trls_crte must name the payer");
+    assert_eq!(event_payee, payee, "trls_crte must name the payee");
+    assert_eq!(
+        event_token, token_address,
+        "trls_crte must carry the agreement's token"
+    );
+    assert_eq!(
+        event_total, amount,
+        "trls_crte must carry the agreement's total amount"
+    );
 
     // ── lock_funds ─────────────────────────────────────────────────────────
     let payer_balance_before = token_client.balance(&payer);
@@ -801,55 +815,197 @@ fn test_cancel_unfunded_milestone() {
     );
 }
 
-/// #621: `cancel_unfunded_milestone` must emit a `trls_cncl` event whose full
-/// payload — `(milestone_id, payer, cancelled_by, amount)` — is asserted here.
+/// #460: the `agreement_created` event's `total_amount` is the sum of every
+/// milestone amount, not just the first one.
 ///
-/// The event is the only record of who cancelled and for how much, so a
-/// regression that dropped a field, swapped `payer` and `cancelled_by`, or
-/// emitted a zero amount would otherwise pass unnoticed.
+/// The single-milestone case in `test_happy_path` cannot distinguish "the sum"
+/// from "milestone 0's amount", so a regression that emitted the wrong field
+/// would slip through there. This multi-milestone agreement pins the sum.
 #[test]
-fn test_cancel_unfunded_milestone_emits_full_event_payload() {
+fn test_agreement_created_event_carries_summed_total_amount() {
     let (env, payer, payee, dispute_resolver, token_address, client) = setup();
     let id = agreement_id(&env, 140);
-    let amount: i128 = 300;
+
+    let milestones = vec![
+        &env,
+        Milestone {
+            amount: 1_000,
+            status: EscrowStatus::Pending,
+            proof_uri: None,
+        },
+        Milestone {
+            amount: 2_500,
+            status: EscrowStatus::Pending,
+            proof_uri: None,
+        },
+        Milestone {
+            amount: 1_500,
+            status: EscrowStatus::Pending,
+            proof_uri: None,
+        },
+    ];
 
     client.init(
         &id,
         &payer,
         &payee,
         &token_address,
-        &one_milestone(&env, amount),
+        &milestones,
         &dispute_resolver,
     );
 
-    client.cancel_unfunded_milestone(&id, &0u32);
-
-    // Events must be inspected straight after the call (see
-    // `assert_trellis_topics`).
     assert_trellis_topics(
         &env,
         &client.address,
-        &[symbol_short!("trls_cncl")],
-        "cancel_unfunded_milestone must emit exactly one trls_cncl event",
+        &[symbol_short!("trls_crte")],
+        "init must emit exactly one agreement_created event",
     );
-    let (milestone_id, event_payer, cancelled_by, event_amount): (u32, Address, Address, i128) =
-        trellis_event_data(&env, &client.address, symbol_short!("trls_cncl"));
+    let (event_payer, event_payee, event_token, event_total): (Address, Address, Address, i128) =
+        trellis_event_data(&env, &client.address, symbol_short!("trls_crte"));
+    assert_eq!(event_payer, payer);
+    assert_eq!(event_payee, payee);
     assert_eq!(
-        milestone_id, 0,
-        "trls_cncl must name the cancelled milestone"
-    );
-    assert_eq!(
-        event_payer, payer,
-        "trls_cncl must carry the agreement's payer"
+        event_token, token_address,
+        "trls_crte must carry the agreement's token"
     );
     assert_eq!(
-        cancelled_by, payer,
-        "trls_cncl must record the payer as the canceller"
+        event_total, 5_000,
+        "trls_crte must carry the sum of all milestone amounts"
+    );
+    // The event must agree with the view an indexer would otherwise call.
+    assert_eq!(
+        event_total,
+        client.get_total_amount(&id),
+        "trls_crte's total_amount must match get_total_amount"
+    );
+}
+
+/// #464: the payee can decline a proposed-but-unfunded milestone on its own
+/// authority, without waiting for the payer to cancel it.
+///
+/// The resulting status is `Cancelled` — the same terminal state the payer-side
+/// `cancel_unfunded_milestone` writes — because nothing was ever escrowed, so
+/// there is no refund to distinguish it from. The `milestone_declined` event
+/// records that the payee, not the payer, was the one who withdrew.
+#[test]
+fn test_decline_unfunded_milestone() {
+    let (env, payer, payee, dispute_resolver, token_address, client) = setup();
+    let token_client = token::TokenClient::new(&env, &token_address);
+    let id = agreement_id(&env, 141);
+
+    client.init(
+        &id,
+        &payer,
+        &payee,
+        &token_address,
+        &one_milestone(&env, 300),
+        &dispute_resolver,
+    );
+
+    let payer_before = token_client.balance(&payer);
+
+    // The payee declines the proposal — must succeed while it is Pending.
+    client.decline_unfunded_milestone(&id, &0u32);
+
+    assert_trellis_topics(
+        &env,
+        &client.address,
+        &[symbol_short!("trls_dcln")],
+        "decline_unfunded_milestone must emit exactly one milestone_declined event",
+    );
+    let (event_milestone, event_payee): (u32, Address) =
+        trellis_event_data(&env, &client.address, symbol_short!("trls_dcln"));
+    assert_eq!(event_milestone, 0, "trls_dcln must name the milestone");
+    assert_eq!(event_payee, payee, "trls_dcln must name the declining payee");
+
+    let agreement = client.get_agreement(&id);
+    let m0 = agreement.milestones.get(0).expect("milestone 0 must exist");
+    assert_eq!(
+        m0.status,
+        EscrowStatus::Cancelled,
+        "a declined milestone must persist Cancelled, not Refunded"
     );
     assert_eq!(
-        event_amount, amount,
-        "trls_cncl must carry the milestone's proposed amount"
+        token_client.balance(&payer),
+        payer_before,
+        "declining an unfunded milestone must not move any tokens"
     );
+    assert_eq!(token_client.balance(&client.address), 0);
+
+    // Terminal: a second decline must fail.
+    assert_eq!(
+        client.try_decline_unfunded_milestone(&id, &0u32),
+        Err(Ok(TrellisError::InvalidStateTransition)),
+        "a second decline on an already-Cancelled milestone must return InvalidStateTransition"
+    );
+    // And the milestone can no longer be funded.
+    assert_eq!(
+        client.try_lock_funds(&id, &0u32),
+        Err(Ok(TrellisError::InvalidStateTransition)),
+        "a declined milestone must not be fundable"
+    );
+}
+
+/// #464 adjacent case: the payee-side decline is `Pending`-only, exactly like
+/// the payer-side cancellation. A milestone with funds locked in it must be
+/// rejected with `InvalidStateTransition` — the payee cannot unilaterally walk
+/// away from escrowed money.
+#[test]
+fn test_decline_funded_milestone_fails_with_invalid_state_transition() {
+    let (env, payer, payee, dispute_resolver, token_address, client) = setup();
+    let token_client = token::TokenClient::new(&env, &token_address);
+    let id = agreement_id(&env, 142);
+
+    client.init(
+        &id,
+        &payer,
+        &payee,
+        &token_address,
+        &one_milestone(&env, 400),
+        &dispute_resolver,
+    );
+
+    client.lock_funds(&id, &0u32);
+
+    assert_eq!(
+        client.try_decline_unfunded_milestone(&id, &0u32),
+        Err(Ok(TrellisError::InvalidStateTransition)),
+        "declining a Funded milestone must return InvalidStateTransition"
+    );
+
+    // The rejected decline must leave the escrow and status untouched.
+    assert_eq!(
+        client.get_milestone(&id, &0u32).map(|m| m.status),
+        Some(EscrowStatus::Funded),
+        "a rejected decline must leave the milestone Funded"
+    );
+    assert_eq!(
+        token_client.balance(&client.address),
+        400,
+        "a rejected decline must not move the escrowed funds"
+    );
+}
+
+/// #464: `decline_unfunded_milestone` is payee-only: without the payee's
+/// signature the call traps.
+#[test]
+#[should_panic(expected = "InvalidAction")]
+fn test_decline_unfunded_wrong_role_fails() {
+    let (env, payer, payee, dispute_resolver, token_address, client) = setup();
+    let id = agreement_id(&env, 143);
+
+    client.init(
+        &id,
+        &payer,
+        &payee,
+        &token_address,
+        &one_milestone(&env, 500),
+        &dispute_resolver,
+    );
+
+    // `decline_unfunded_milestone` gates on `agreement.payee.require_auth()`.
+    deny_all_auth(&env);
+    client.decline_unfunded_milestone(&id, &0u32);
 }
 
 /// Cancelling a milestone that has already been funded must be rejected with
@@ -3319,6 +3475,10 @@ fn test_agreement_not_found_on_mutating_entrypoints() {
         "cancel_unfunded_milestone"
     );
     assert_agreement_not_found!(
+        client.try_decline_unfunded_milestone(&missing, &0u32),
+        "decline_unfunded_milestone"
+    );
+    assert_agreement_not_found!(
         client.try_set_milestone_deadline(&missing, &0u32, &u64::MAX),
         "set_milestone_deadline"
     );
@@ -3395,6 +3555,10 @@ fn test_invalid_milestone_on_mutating_entrypoints() {
     assert_invalid_milestone!(
         client.try_cancel_unfunded_milestone(&id, &oob),
         "cancel_unfunded_milestone"
+    );
+    assert_invalid_milestone!(
+        client.try_decline_unfunded_milestone(&id, &oob),
+        "decline_unfunded_milestone"
     );
     assert_invalid_milestone!(
         client.try_set_milestone_deadline(&id, &oob, &u64::MAX),
