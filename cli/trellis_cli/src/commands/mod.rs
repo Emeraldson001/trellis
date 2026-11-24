@@ -532,6 +532,26 @@ pub enum DeadlineSubcommand {
     },
 }
 
+/// A secret key given on the command line. Its `Debug` output is
+/// `"<redacted>"`, so a `{:?}` of the parsed command never prints the key
+/// (#641).
+#[derive(Clone)]
+pub struct SecretArg(pub String);
+
+impl std::fmt::Debug for SecretArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("\"<redacted>\"")
+    }
+}
+
+impl std::str::FromStr for SecretArg {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(SecretArg(s.to_string()))
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum KeysSubcommand {
     /// Store a Stellar secret key in the OS keychain for a named identity.
@@ -540,7 +560,7 @@ pub enum KeysSubcommand {
         identity: String,
 
         /// Stellar secret key (S...).
-        key: String,
+        key: SecretArg,
     },
 
     /// Remove a Stellar secret key from the OS keychain.
@@ -743,7 +763,7 @@ fn run_keys(subcmd: KeysSubcommand) -> Result<(), String> {
     match subcmd {
         KeysSubcommand::Add { identity, key } => {
             keystore
-                .store_in_keychain(&identity, &key)
+                .store_in_keychain(&identity, &key.0)
                 .map_err(|e| format!("Failed to store key: {}", e))?;
             println!("✓ Key stored for identity '{}'", identity);
             Ok(())
@@ -1882,7 +1902,7 @@ pub fn config_report(
 
     serde_json::json!({
         "network": network_name,
-        "rpc_url": config.rpc_url,
+        "rpc_url": crate::config::redact_url(&config.rpc_url),
         "network_passphrase": config.network_passphrase,
         "contract_id": contract_id,
         "source_key": config.masked_source_key(),
@@ -2005,7 +2025,8 @@ fn run_health(config: &Config, opts: &OutputOpts) -> Result<(), String> {
             stdout: serde_json::json!({ "health": health }).to_string(),
             stderr: format!(
                 "RPC endpoint {} reports status {:?}",
-                config.rpc_url, health.status
+                crate::config::redact_url(&config.rpc_url),
+                health.status
             ),
             success: false,
             exit_code: None,
@@ -2529,6 +2550,21 @@ fn extract_events(stderr: &str) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- #641: `keys add` key is redacted in Debug output ---
+
+    #[test]
+    fn keys_add_debug_output_redacts_key() {
+        let seed = format!("S{}", "A".repeat(55));
+        let subcmd = KeysSubcommand::Add {
+            identity: "alice".to_string(),
+            key: seed.parse().unwrap(),
+        };
+        let printed = format!("{subcmd:?}");
+        assert!(!printed.contains(&seed), "{printed}");
+        assert!(printed.contains("alice"), "{printed}");
+        assert!(printed.contains("<redacted>"), "{printed}");
+    }
 
     // --- build_milestones_json ---
 

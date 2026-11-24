@@ -83,7 +83,7 @@ impl Network {
 ///
 /// Values are loaded from environment variables with Soroban Testnet defaults
 /// so the tool works out-of-the-box for local development.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     /// Soroban RPC endpoint.
     /// Env: `STELLAR_RPC_URL`
@@ -108,6 +108,25 @@ pub struct Config {
     /// `TRELLIS_SOURCE_KEY_FILE`, `TRELLIS_SOURCE_KEY`, or `unset`. Only
     /// used for diagnostics (`trellis config`, #485).
     pub source_key_origin: &'static str,
+}
+
+/// Written by hand so a `{:?}` of a `Config` never prints a raw secret seed
+/// (#641). Named `stellar keys` identities are not secret and are shown.
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let source_key = if is_secret_seed(&self.source_key) {
+            "<redacted>"
+        } else {
+            self.source_key.as_str()
+        };
+        f.debug_struct("Config")
+            .field("rpc_url", &self.rpc_url)
+            .field("network_passphrase", &self.network_passphrase)
+            .field("contract_id", &self.contract_id)
+            .field("source_key", &source_key)
+            .field("source_key_origin", &self.source_key_origin)
+            .finish()
+    }
 }
 
 /// Number of characters in a Stellar strkey address (`C…` / `G…` / `S…`),
@@ -155,30 +174,78 @@ pub fn validate_contract_id(id: &str) -> Result<(), String> {
 /// `ws`, …) and any URL with an empty host is rejected here with a clear
 /// message.
 ///
-/// This checks the URL's *shape* only. The cleartext-`http://`-to-a-remote-host
-/// policy lives solely in [`check_rpc_transport`], which knows about the
-/// `--unsafe-rpc` flag (#156, #636). Keeping the policy out of here means
-/// `Config::validate` never rejects a URL that `--unsafe-rpc` would allow.
-///
-/// Returns the normalized URL on success.
-pub fn validate_rpc_url(raw: &str) -> Result<String, String> {
+/// Cleartext `http://` to a non-loopback host is refused by default to
+/// prevent a compromised `.env` from silently redirecting traffic to an
+/// unauthenticated endpoint. Pass `unsafe_rpc = true` to downgrade the hard
+/// error to a printed warning (useful for development devnets). This mirrors
+/// the `--unsafe-rpc` CLI flag (#156).
+pub fn validate_rpc_url(raw: &str, unsafe_rpc: bool) -> Result<Option<String>, String> {
+    let shown = redact_url(raw);
     let parsed =
-        url::Url::parse(raw).map_err(|e| format!("RPC URL {raw:?} is not a valid URL: {e}"))?;
+        url::Url::parse(raw).map_err(|e| format!("RPC URL {shown:?} is not a valid URL: {e}"))?;
 
     match parsed.scheme() {
         "http" | "https" => {}
         other => {
             return Err(format!(
-                "RPC URL scheme must be http or https, got {other:?} (in {raw:?})"
+                "RPC URL scheme must be http or https, got {other:?} (in {shown:?})"
             ));
         }
     }
 
     if parsed.host_str().map_or(true, str::is_empty) {
-        return Err(format!("RPC URL {raw:?} is missing a host"));
+        return Err(format!("RPC URL {shown:?} is missing a host"));
     }
 
-    Ok(parsed.to_string())
+    // Guard against cleartext HTTP to non-loopback hosts (#156).
+    if parsed.scheme() == "http" {
+        let host = parsed.host_str().unwrap_or("");
+        let is_loopback = matches!(host, "localhost" | "127.0.0.1" | "::1");
+        if !is_loopback {
+            let msg = format!(
+                "Warning: RPC URL {shown:?} uses cleartext HTTP to a non-loopback host. \
+                 Traffic may be intercepted. Use https:// or pass --unsafe-rpc to suppress this error."
+            );
+            if unsafe_rpc {
+                return Ok(Some(msg));
+            } else {
+                return Err(msg);
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// A copy of the URL `raw` that is safe to print (#642).
+///
+/// Hosted Soroban RPC providers often put an API key in the URL, so the
+/// userinfo (`user:password@`) is removed and every query-string value is
+/// replaced with `***` (a bare `?token` is replaced as a whole). A key
+/// embedded in a path segment (e.g. `https://rpc.example/v1/<key>`) can't be
+/// told apart from an ordinary path and is left as-is. A URL with neither
+/// userinfo nor a query, or one that doesn't parse, is returned unchanged.
+pub fn redact_url(raw: &str) -> String {
+    let Ok(mut parsed) = url::Url::parse(raw) else {
+        return raw.to_string();
+    };
+    if parsed.username().is_empty() && parsed.password().is_none() && parsed.query().is_none() {
+        return raw.to_string();
+    }
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    if let Some(query) = parsed.query() {
+        let masked = query
+            .split('&')
+            .map(|pair| match pair.split_once('=') {
+                Some((key, _)) => format!("{key}=***"),
+                None => "***".to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("&");
+        parsed.set_query(Some(&masked));
+    }
+    parsed.to_string()
 }
 
 /// Refuse cleartext `http://` to a non-loopback RPC host (#156).
@@ -191,8 +258,9 @@ pub fn validate_rpc_url(raw: &str) -> Result<String, String> {
 /// Returns `Ok(None)` when no warning is needed, `Ok(Some(warning))` when
 /// cleartext was allowed by the flag, and `Err(message)` when it was not.
 pub fn check_rpc_transport(raw: &str, allow_insecure: bool) -> Result<Option<String>, String> {
+    let shown = redact_url(raw);
     let parsed =
-        url::Url::parse(raw).map_err(|e| format!("RPC URL {raw:?} is not a valid URL: {e}"))?;
+        url::Url::parse(raw).map_err(|e| format!("RPC URL {shown:?} is not a valid URL: {e}"))?;
     if parsed.scheme() != "http" {
         return Ok(None);
     }
@@ -208,13 +276,13 @@ pub fn check_rpc_transport(raw: &str, allow_insecure: bool) -> Result<Option<Str
         Ok(None)
     } else if allow_insecure {
         Ok(Some(format!(
-            "warning: using cleartext HTTP RPC endpoint {raw} (--unsafe-rpc). \
+            "warning: using cleartext HTTP RPC endpoint {shown} (--unsafe-rpc). \
              Responses from this endpoint are not authenticated and can be \
              tampered with — never use this against mainnet."
         )))
     } else {
         Err(format!(
-            "Error: refusing to use insecure RPC URL {raw:?}. Non-localhost \
+            "Error: refusing to use insecure RPC URL {shown:?}. Non-localhost \
              endpoints must use https://. Pass --unsafe-rpc to allow http:// \
              for local development."
         ))
@@ -362,8 +430,7 @@ impl Config {
                     .to_string()
             })?;
 
-        let contract_id = std::env::var("TRELLIS_CONTRACT_ID")
-            .unwrap_or_else(|_| "UNSET_CONTRACT_ID".to_string());
+        let contract_id = contract_id_value(std::env::var("TRELLIS_CONTRACT_ID").ok());
 
         let (source_key, source_key_origin) = match role {
             None => resolve_source_key_value(
@@ -468,6 +535,15 @@ impl Config {
     }
 }
 
+/// The contract ID from a raw `TRELLIS_CONTRACT_ID` value, trimmed. A missing,
+/// blank or whitespace-only value becomes the `UNSET_CONTRACT_ID` sentinel
+/// that `validate()` reports by name.
+fn contract_id_value(raw: Option<String>) -> String {
+    raw.map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| "UNSET_CONTRACT_ID".to_string())
+}
+
 /// An env var name paired with its value, if set.
 struct KeyVar {
     name: &'static str,
@@ -518,7 +594,13 @@ fn resolve_source_key_value(
             }
             read_source_key_file(&path, origin).map(|k| Some((k, origin)))
         }
-        None => Ok(env_key.value.map(|k| (k, env_key.name))),
+        // A blank or whitespace-only value is treated as unset, so `validate()`
+        // names the missing variable instead of `--source ""` reaching `stellar`.
+        None => Ok(env_key
+            .value
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty())
+            .map(|k| (k, env_key.name))),
     }
 /// Response body from a Soroban RPC `getNetwork` call.
 ///
@@ -775,6 +857,68 @@ mod tests {
     fn source_key_none_when_nothing_configured() {
         let key = resolve_source_key_value(None, file_var(None), key_var(None)).unwrap();
         assert_eq!(key, None);
+    }
+
+    #[test]
+    fn debug_output_redacts_secret_seed() {
+        let seed = format!("S{}", "A".repeat(STRKEY_LEN - 1));
+        let printed = format!("{:?}", config_with(&valid_contract_id(), &seed));
+        assert!(!printed.contains(&seed), "{printed}");
+        assert!(printed.contains("source_key: \"<redacted>\""), "{printed}");
+
+        let printed = format!("{:?}", config_with(&valid_contract_id(), "alice"));
+        assert!(printed.contains("source_key: \"alice\""), "{printed}");
+    }
+
+    #[test]
+    fn redact_url_strips_userinfo_and_masks_query_values() {
+        assert_eq!(
+            redact_url("https://user:pw@rpc.example/?apikey=abc"),
+            "https://rpc.example/?apikey=***"
+        );
+        assert_eq!(
+            redact_url("https://rpc.example/rpc?key=abc&token"),
+            "https://rpc.example/rpc?key=***&***"
+        );
+    }
+
+    #[test]
+    fn redact_url_leaves_plain_and_unparseable_urls_unchanged() {
+        for raw in ["https://soroban-testnet.stellar.org", "not a url"] {
+            assert_eq!(redact_url(raw), raw);
+        }
+    }
+
+    #[test]
+    fn blank_source_key_env_var_is_treated_as_unset() {
+        for blank in ["", "   "] {
+            let key =
+                resolve_source_key_value(None, file_var(None), key_var(Some(blank))).unwrap();
+            assert_eq!(key, None, "{blank:?}");
+        }
+        // `resolve` maps `None` to the sentinel, which `validate` names.
+        let err = config_with(&valid_contract_id(), "UNSET_SOURCE_KEY")
+            .validate()
+            .unwrap_err();
+        assert!(err.contains(&"TRELLIS_SOURCE_KEY".to_string()));
+    }
+
+    #[test]
+    fn source_key_env_var_is_trimmed() {
+        let key =
+            resolve_source_key_value(None, file_var(None), key_var(Some("  alice "))).unwrap();
+        assert_eq!(key, Some(("alice".to_string(), "TRELLIS_SOURCE_KEY")));
+    }
+
+    #[test]
+    fn contract_id_is_trimmed_and_blank_is_unset() {
+        let id = valid_contract_id();
+        let trimmed = contract_id_value(Some(format!("  {id} \n")));
+        assert_eq!(trimmed, id);
+        assert!(config_with(&trimmed, "alice").validate().is_ok());
+        for blank in [None, Some(String::new()), Some("   ".to_string())] {
+            assert_eq!(contract_id_value(blank), "UNSET_CONTRACT_ID");
+        }
     }
 
     #[test]
