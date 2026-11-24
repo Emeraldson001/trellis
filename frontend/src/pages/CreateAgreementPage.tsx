@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { nativeToScVal, StrKey, xdr } from '@stellar/stellar-sdk'
 import { useContractInvoke } from '../hooks/useContractInvoke'
@@ -93,6 +93,16 @@ function CreateAgreementPage() {
   const wallet = useWallet()
   const toast = useToastActions()
   const { invoke, status } = useContractInvoke()
+
+  const fieldId = useId()
+  const payerId = `${fieldId}-payer`
+  const payeeId = `${fieldId}-payee`
+  const resolverId = `${fieldId}-resolver`
+  const tokenId = `${fieldId}-token`
+  const payerErrorId = `${payerId}-error`
+  const payeeErrorId = `${payeeId}-error`
+  const resolverErrorId = `${resolverId}-error`
+  const tokenErrorId = `${tokenId}-error`
 
   const [agreementId, setAgreementId] = useState<string>('')
   const [formData, setFormData] = useState<FormData>({
@@ -235,90 +245,118 @@ function CreateAgreementPage() {
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
-            strokeWidth={2}
           >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
-          <span>Agreement ID: <span className="font-mono text-white dark:text-white light:text-gray-900">{agreementId}</span></span>
+          <span>Agreement ID: <code className="font-mono text-cyan-400">{agreementId}</code></span>
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="mt-10 space-y-6">
-        {/* Payer (connected wallet) */}
+      <form onSubmit={handleSubmit} className="mt-10 space-y-6" noValidate>
+        {/* Payer (read-only, connected wallet) */}
         <div>
-          <label className="block text-sm font-medium text-gray-300 dark:text-gray-300 light:text-gray-700 mb-2">
-            Payer (your connected wallet)
+          <label htmlFor={payerId} className="block text-sm font-medium text-gray-300 dark:text-gray-300 light:text-gray-700 mb-2">
+            Payer Address
           </label>
           <input
+            id={payerId}
             type="text"
             value={payer}
             readOnly
             placeholder="Connect your wallet"
-            className="w-full px-4 py-3 bg-navy-800 dark:bg-navy-800 light:bg-gray-50 border border-navy-600 dark:border-navy-600 light:border-gray-300 rounded-lg text-gray-400 dark:text-gray-400 light:text-gray-600 font-mono text-sm cursor-not-allowed"
+            aria-invalid={errors.payer ? 'true' : undefined}
+            aria-describedby={errors.payer ? payerErrorId : undefined}
+            className="w-full px-4 py-3 bg-navy-800 dark:bg-navy-800 light:bg-white border border-navy-600 dark:border-navy-600 light:border-gray-300 rounded-lg text-gray-300 dark:text-gray-300 light:text-gray-900 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
           />
-          {errors.payer && <p className="mt-1 text-sm text-red-400">{errors.payer}</p>}
+          {errors.payer && (
+            <p id={payerErrorId} role="alert" className="mt-2 text-sm text-red-400">
+              {errors.payer}
+            </p>
+          )}
         </div>
 
         {/* Payee */}
         <div>
-          <label className="block text-sm font-medium text-gray-300 dark:text-gray-300 light:text-gray-700 mb-2">
+          <label htmlFor={payeeId} className="block text-sm font-medium text-gray-300 dark:text-gray-300 light:text-gray-700 mb-2">
             Payee Address
           </label>
           <input
+            id={payeeId}
             type="text"
             value={formData.payee}
             onChange={(e) => handleInputChange('payee', e.target.value)}
-            placeholder="G... or C..."
-            className="w-full px-4 py-3 bg-navy-800 dark:bg-navy-800 light:bg-gray-50 border border-navy-600 dark:border-navy-600 light:border-gray-300 rounded-lg text-white dark:text-white light:text-gray-900 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+            placeholder="G..."
+            aria-invalid={errors.payee ? 'true' : undefined}
+            aria-describedby={errors.payee ? payeeErrorId : undefined}
+            className="w-full px-4 py-3 bg-navy-800 dark:bg-navy-800 light:bg-white border border-navy-600 dark:border-navy-600 light:border-gray-300 rounded-lg text-gray-300 dark:text-gray-300 light:text-gray-900 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
           />
-          {errors.payee && <p className="mt-1 text-sm text-red-400">{errors.payee}</p>}
+          {errors.payee && (
+            <p id={payeeErrorId} role="alert" className="mt-2 text-sm text-red-400">
+              {errors.payee}
+            </p>
+          )}
         </div>
 
         {/* Resolver */}
         <div>
-          <label className="block text-sm font-medium text-gray-300 dark:text-gray-300 light:text-gray-700 mb-2">
-            Dispute Resolver Address
+          <label htmlFor={resolverId} className="block text-sm font-medium text-gray-300 dark:text-gray-300 light:text-gray-700 mb-2">
+            Resolver Address
           </label>
           <input
+            id={resolverId}
             type="text"
             value={formData.resolver}
             onChange={(e) => handleInputChange('resolver', e.target.value)}
-            placeholder="G... or C..."
-            className="w-full px-4 py-3 bg-navy-800 dark:bg-navy-800 light:bg-gray-50 border border-navy-600 dark:border-navy-600 light:border-gray-300 rounded-lg text-white dark:text-white light:text-gray-900 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+            placeholder="G..."
+            aria-invalid={errors.resolver ? 'true' : undefined}
+            aria-describedby={errors.resolver ? resolverErrorId : undefined}
+            className="w-full px-4 py-3 bg-navy-800 dark:bg-navy-800 light:bg-white border border-navy-600 dark:border-navy-600 light:border-gray-300 rounded-lg text-gray-300 dark:text-gray-300 light:text-gray-900 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
           />
-          {errors.resolver && <p className="mt-1 text-sm text-red-400">{errors.resolver}</p>}
+          {errors.resolver && (
+            <p id={resolverErrorId} role="alert" className="mt-2 text-sm text-red-400">
+              {errors.resolver}
+            </p>
+          )}
         </div>
 
         {/* Token */}
         <div>
-          <label className="block text-sm font-medium text-gray-300 dark:text-gray-300 light:text-gray-700 mb-2">
-            Token Contract Address
+          <label htmlFor={tokenId} className="block text-sm font-medium text-gray-300 dark:text-gray-300 light:text-gray-700 mb-2">
+            Token Address
           </label>
           <input
+            id={tokenId}
             type="text"
             value={formData.token}
             onChange={(e) => handleInputChange('token', e.target.value)}
             placeholder="C..."
-            className="w-full px-4 py-3 bg-navy-800 dark:bg-navy-800 light:bg-gray-50 border border-navy-600 dark:border-navy-600 light:border-gray-300 rounded-lg text-white dark:text-white light:text-gray-900 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+            aria-invalid={errors.token ? 'true' : undefined}
+            aria-describedby={errors.token ? tokenErrorId : undefined}
+            className="w-full px-4 py-3 bg-navy-800 dark:bg-navy-800 light:bg-white border border-navy-600 dark:border-navy-600 light:border-gray-300 rounded-lg text-gray-300 dark:text-gray-300 light:text-gray-900 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
           />
-          {errors.token && <p className="mt-1 text-sm text-red-400">{errors.token}</p>}
+          {errors.token && (
+            <p id={tokenErrorId} role="alert" className="mt-2 text-sm text-red-400">
+              {errors.token}
+            </p>
+          )}
         </div>
 
         {/* Milestones */}
         <div>
-          <label className="block text-sm font-medium text-gray-300 dark:text-gray-300 light:text-gray-700 mb-2">
-            Milestones
-          </label>
           <MilestoneBuilder milestones={milestones} onChange={setMilestones} />
-          {errors.milestones && <p className="mt-1 text-sm text-red-400">{errors.milestones}</p>}
+          {errors.milestones && (
+            <p role="alert" className="mt-2 text-sm text-red-400">
+              {errors.milestones}
+            </p>
+          )}
         </div>
 
         <button
           type="submit"
-          disabled={isSubmitting || isInFlight}
-          className="w-full px-6 py-3 bg-cyan-500 hover:bg-cyan-400 disabled:bg-navy-600 disabled:text-gray-500 text-navy-900 font-semibold rounded-lg transition-colors"
+          disabled={isSubmitting || status === 'pending'}
+          className="w-full px-6 py-3 bg-cyan-500 hover:bg-cyan-400 disabled:bg-gray-600 disabled:cursor-not-allowed text-navy-900 font-semibold rounded-lg transition-colors"
         >
-          {isSubmitting || isInFlight ? 'Creating...' : 'Create Agreement'}
+          {isSubmitting || status === 'pending' ? 'Creating Agreement...' : 'Create Agreement'}
         </button>
       </form>
     </main>

@@ -100,7 +100,11 @@ export default function StatusPage() {
         {/* Search Form */}
         <form onSubmit={handleSearch} className="mb-8">
           <div className="flex gap-2">
+            <label htmlFor="status-agreement-search" className="sr-only">
+              Agreement ID
+            </label>
             <input
+              id="status-agreement-search"
               type="text"
               placeholder="Enter Agreement ID (hex format)"
               value={agreementId}
@@ -181,6 +185,72 @@ export default function StatusPage() {
                   scrollable table is hard to read and hard to tap on a phone. */}
               <div className="hidden md:block overflow-x-auto">
                 <table className="w-full">
-  
+                  <thead>
+                    <tr className="border-b border-navy-700 dark:border-navy-700 light:border-gray-200">
+                      <th className="text-left py-3 px-4 text-gray-400 dark:text-gray-400 light:text-gray-600 text-sm font-medium">#</th>
+                      <th className="text-left py-3 px-4 text-gray-400 dark:text-gray-400 light:text-gray-600 text-sm font-medium">Amount</th>
+                      <th className="text-left py-3 px-4 text-gray-400 dark:text-gray-400 light:text-gray-600 text-sm font-medium">Status</th>
+                      <th className="text-left py-3 px-4 text-gray-400 dark:text-gray-400 light:text-gray-600 text-sm font-medium">Proof</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {agreement.milestones.map((milestone, index) => (
+                      <MilestoneRow
+                        key={index}
+                        index={index}
+                        milestone={milestone}
+                        token={agreement.token}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
 
-/* … truncated 3246 chars — edit only what you need near the top … */
+              {/* Mobile: cards */}
+              <div className="md:hidden space-y-4">
+                {agreement.milestones.map((milestone, index) => (
+                  <MilestoneCard
+                    key={index}
+                    index={index}
+                    milestone={milestone}
+                    token={agreement.token}
+                  />
+                ))}
+              </div>
+            </div>
+
+            {/* Events */}
+            <div className="bg-navy-800 dark:bg-navy-800 light:bg-white border border-navy-700 dark:border-navy-700 light:border-gray-200 rounded-lg p-6">
+              <h2 className="text-xl font-semibold text-cyan-400 mb-6">Events</h2>
+
+              {eventsLoading && (
+                <p className="text-gray-400 dark:text-gray-400 light:text-gray-600">Loading events...</p>
+              )}
+
+              {eventsError && (
+                <p className="text-red-400 text-sm">Failed to load events: {eventsError}</p>
+              )}
+
+              {!eventsLoading && !eventsError && events.length === 0 && (
+                <p className="text-gray-400 dark:text-gray-400 light:text-gray-600">No events yet.</p>
+              )}
+
+              {!eventsLoading && events.length > 0 && (
+                <ul className="space-y-2">
+                  {events.map((event, index) => (
+                    <li
+                      key={index}
+                      className="text-sm text-gray-300 dark:text-gray-300 light:text-gray-700"
+                    >
+                      {event.type}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
