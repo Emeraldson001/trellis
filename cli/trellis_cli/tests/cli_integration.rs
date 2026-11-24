@@ -16,22 +16,26 @@ use std::process::Command;
 /// Path to the mock stellar binary script
 fn mock_stellar_path() -> String {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    format!("{}/tests/mock_stellar.sh", manifest_dir)
+    let script = if cfg!(windows) {
+        "mock_stellar.bat"
+    } else {
+        "mock_stellar.sh"
+    };
+    format!("{}/tests/{}", manifest_dir, script)
 }
 
 /// Build a trellis CLI invocation with the mock stellar binary
 fn trellis_cmd() -> Command {
-    let mut cmd = Command::new("cargo");
-    cmd.args(["run", "--quiet", "--"])
-        .env("TRELLIS_TEST_MODE", "true")
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_trellis"));
+    cmd.env("TRELLIS_TEST_MODE", "true")
         .env("STELLAR_MOCK_BIN", mock_stellar_path())
         .env(
             "TRELLIS_CONTRACT_ID",
-            "CBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            "CBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX",
         )
         .env(
             "TRELLIS_SOURCE_KEY",
-            "SBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            "SBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX",
         );
     cmd
 }
@@ -48,14 +52,14 @@ fn test_init_parses_all_required_args() {
             "--agreement-id",
             "0000000000000000000000000000000000000000000000000000000000000001",
             "--payer",
-            "GBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW",
+            "GBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX",
             "--payee",
-            "GZYXWVUTSRQPONMLKJIHGFEDCBA234567ZYXWVUTSRQPONMLKJIHGF",
+            "GZYXWVUTSRQPONMLKJIHGFEDCBA234567ZYXWVUTSRQPONMLKJIHGFED",
             "--token",
-            "CBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            "CBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX",
             "--resolver",
-            "GRESOLVABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNO",
-            "--milestones",
+            "GRESOLVABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQ",
+            "--amounts",
             "1000,2000,3000",
             "--dry-run",
         ])
@@ -179,13 +183,13 @@ fn test_quiet_mode_suppresses_non_result_output() {
 #[test]
 fn test_missing_stellar_binary_error() {
     // Temporarily unset the mock binary to simulate stellar not being in PATH
-    let output = Command::new("cargo")
-        .args(["run", "--quiet", "--", "status", "--agreement-id", "0001"])
+    let output = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .args(["status", "--agreement-id", "0001"])
         .env_remove("STELLAR_MOCK_BIN")
         .env_remove("PATH") // Remove PATH to ensure stellar is not found
         .env(
             "TRELLIS_CONTRACT_ID",
-            "CBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            "CBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX",
         )
         .output()
         .expect("failed to execute trellis");
@@ -268,8 +272,8 @@ fn test_json_confirmation_prompt_goes_to_stderr() {
 
 #[test]
 fn test_missing_required_env_vars() {
-    let output = Command::new("cargo")
-        .args(["run", "--quiet", "--", "status", "--agreement-id", "0001"])
+    let output = Command::new(env!("CARGO_BIN_EXE_trellis"))
+        .args(["status", "--agreement-id", "0001"])
         .env_remove("TRELLIS_CONTRACT_ID")
         .env_remove("TRELLIS_SOURCE_KEY")
         .output()
@@ -296,14 +300,14 @@ fn test_init_with_multiple_milestones() {
             "--agreement-id",
             "0000000000000000000000000000000000000000000000000000000000000002",
             "--payer",
-            "GBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW",
+            "GBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX",
             "--payee",
-            "GZYXWVUTSRQPONMLKJIHGFEDCBA234567ZYXWVUTSRQPONMLKJIHGF",
+            "GZYXWVUTSRQPONMLKJIHGFEDCBA234567ZYXWVUTSRQPONMLKJIHGFED",
             "--token",
-            "CBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            "CBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX",
             "--resolver",
-            "GRESOLVABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNO",
-            "--milestones",
+            "GRESOLVABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQ",
+            "--amounts",
             "1000,2000,3000,4000,5000",
             "--json",
         ])
@@ -350,7 +354,7 @@ fn test_raise_dispute_requires_caller() {
             "--milestone-id",
             "0",
             "--caller",
-            "GBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW",
+            "GBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX",
             "--dry-run",
         ])
         .output()
@@ -437,12 +441,9 @@ fn test_completion_command_generates_shell_completions() {
 /// must be skipped for dry-run invocations.
 #[test]
 fn test_dry_run_works_without_stellar_binary() {
-    let output = Command::new("cargo")
+    let output = Command::new(env!("CARGO_BIN_EXE_trellis"))
         .args([
-            "run",
-            "--quiet",
-            "--",
-            "lock-funds",
+            "lock",
             "--agreement-id",
             "0000000000000000000000000000000000000000000000000000000000000001",
             "--milestone-id",
@@ -453,11 +454,11 @@ fn test_dry_run_works_without_stellar_binary() {
         .env("PATH", "")
         .env(
             "TRELLIS_CONTRACT_ID",
-            "CBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            "CBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX",
         )
         .env(
             "TRELLIS_SOURCE_KEY",
-            "SBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            "SBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX",
         )
         .current_dir(env::var("CARGO_MANIFEST_DIR").unwrap())
         .output()
@@ -486,11 +487,8 @@ stdout: {}",
 /// while fixing #406.
 #[test]
 fn test_non_dry_run_still_requires_stellar_binary() {
-    let output = Command::new("cargo")
+    let output = Command::new(env!("CARGO_BIN_EXE_trellis"))
         .args([
-            "run",
-            "--quiet",
-            "--",
             "status",
             "--agreement-id",
             "0000000000000000000000000000000000000000000000000000000000000001",
@@ -499,11 +497,11 @@ fn test_non_dry_run_still_requires_stellar_binary() {
         .env("PATH", "")
         .env(
             "TRELLIS_CONTRACT_ID",
-            "CBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            "CBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX",
         )
         .env(
             "TRELLIS_SOURCE_KEY",
-            "SBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            "SBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX",
         )
         .current_dir(env::var("CARGO_MANIFEST_DIR").unwrap())
         .output()
@@ -763,7 +761,7 @@ fn test_account_sequence_lookup_found() {
             "account",
             "sequence",
             "--account",
-            "GBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW",
+            "GBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX",
         ])
         .output()
         .expect("failed to execute trellis");
@@ -801,7 +799,7 @@ fn test_account_sequence_lookup_not_found() {
             "account",
             "sequence",
             "--account",
-            "GBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW",
+            "GBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX",
         ])
         .output()
         .expect("failed to execute trellis");
@@ -866,4 +864,155 @@ fn test_decline_unfunded_milestone_json_output() {
     let envelope: serde_json::Value =
         serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).expect("JSON");
     assert_eq!(envelope["status"], "success");
+}
+
+// ---------------------------------------------------------------------------
+// #652: every handler that takes --agreement-id must validate it
+// ---------------------------------------------------------------------------
+
+/// Every command whose handler must call `validate_agreement_id` first, with
+/// the other arguments clap requires for it. When adding a command that takes
+/// an agreement ID, add it here too.
+fn agreement_id_commands() -> Vec<(&'static str, Vec<&'static str>)> {
+    vec![
+        (
+            "init",
+            vec![
+                "--payer",
+                "GBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX",
+                "--payee",
+                "GZYXWVUTSRQPONMLKJIHGFEDCBA234567ZYXWVUTSRQPONMLKJIHGFED",
+                "--token",
+                "CBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX",
+                "--resolver",
+                "GRESOLVABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQ",
+                "--milestones",
+                "1000",
+            ],
+        ),
+        ("lock-funds", vec!["--milestone-id", "0"]),
+        ("submit-work", vec!["--milestone-id", "0"]),
+        ("approve-release", vec!["--milestone-id", "0"]),
+        (
+            "raise-dispute",
+            vec![
+                "--milestone-id",
+                "0",
+                "--caller",
+                "GBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX",
+            ],
+        ),
+        ("resolve-dispute", vec!["--milestone-id", "0"]),
+        ("cancel-milestone", vec!["--milestone-id", "0"]),
+        ("status", vec![]),
+        ("milestone-status", vec!["--milestone-id", "0"]),
+    ]
+}
+
+/// Drives every handler without `--dry-run` with an agreement ID carrying an
+/// injected suffix. Each must exit 1 with an `agreement_id` error before
+/// anything is invoked, so removing the `validate_agreement_id` call from any
+/// one handler lets the value through to the mock and fails this test.
+#[test]
+fn test_injected_agreement_id_rejected_by_every_command() {
+    let injected = format!("{};x", "0".repeat(64));
+
+    for (command, extra_args) in agreement_id_commands() {
+        let output = trellis_cmd()
+            .arg(command)
+            .args(["--agreement-id", &injected])
+            .args(&extra_args)
+            .output()
+            .expect("failed to execute trellis");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{command} must reject the injected agreement ID\nstdout: {stdout}\nstderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("agreement_id"),
+            "{command} should report an agreement_id error\nstderr: {stderr}"
+        );
+        // Nothing reached `stellar contract invoke`, so there is no result.
+        assert!(
+            stdout.trim().is_empty(),
+            "{command} must not invoke stellar\nstdout: {stdout}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #650: end-to-end runs against the mock (no --dry-run)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_status_runs_against_mock() {
+    let output = trellis_cmd()
+        .args([
+            "status",
+            "--agreement-id",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        ])
+        .output()
+        .expect("failed to execute trellis");
+
+    assert!(
+        output.status.success(),
+        "status should succeed against the mock\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("agreement_id"));
+}
+
+#[test]
+fn test_milestone_status_runs_against_mock() {
+    let output = trellis_cmd()
+        .args([
+            "milestone-status",
+            "--agreement-id",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            "--milestone-id",
+            "0",
+        ])
+        .output()
+        .expect("failed to execute trellis");
+
+    assert!(
+        output.status.success(),
+        "milestone-status should succeed against the mock\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Pending"));
+}
+
+#[test]
+fn test_init_runs_against_mock() {
+    let output = trellis_cmd()
+        .args([
+            "init",
+            "--agreement-id",
+            "0000000000000000000000000000000000000000000000000000000000000003",
+            "--payer",
+            "GBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX",
+            "--payee",
+            "GZYXWVUTSRQPONMLKJIHGFEDCBA234567ZYXWVUTSRQPONMLKJIHGFED",
+            "--token",
+            "CBCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWX",
+            "--resolver",
+            "GRESOLVABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQ",
+            "--milestones",
+            "1000,2000",
+            "--yes",
+        ])
+        .output()
+        .expect("failed to execute trellis");
+
+    assert!(
+        output.status.success(),
+        "init should succeed against the mock\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
