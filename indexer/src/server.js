@@ -24,6 +24,7 @@ export function createIndexerServer({
   maxClients,
   maxClientsPerIp = 10,
   maxBufferBytes = 1024 * 1024,
+  maxLagLedgers = 100,
 }) {
   /**
    * Registry of connected SSE clients, keyed by client object so we can look up
@@ -83,17 +84,25 @@ export function createIndexerServer({
     const url = new URL(req.url ?? '/', 'http://localhost')
 
     switch (url.pathname) {
-      case '/health':
-        return json(res, 200, {
-          status: ingester.lastError ? 'degraded' : 'ok',
+      case '/health': {
+        const rpcLatestLedger = ingester.rpcLatestLedger ?? 0
+        const latestIndexedLedger = store.stats().latestIndexedLedger ?? 0
+        const lag = rpcLatestLedger - latestIndexedLedger
+        const degraded = Boolean(ingester.lastError)
+        const lagging = lag > maxLagLedgers
+        return json(res, degraded || lagging ? 503 : 200, {
+          status: degraded ? 'degraded' : lagging ? 'lagging' : 'ok',
+          lag,
+          maxLagLedgers,
+          rpcLatestLedger,
+          latestIndexedLedger,
           lastPollAt: ingester.lastPollAt,
           lastError: ingester.lastError,
-          rpcLatestLedger: ingester.rpcLatestLedger,
-          latestIndexedLedger: store.stats().latestIndexedLedger,
           lastGap: JSON.parse(store.getMeta('last_gap') ?? 'null'),
           clients: clients.size,
           maxClientsPerIp,
         })
+      }
 
       case '/events': {
         const agreementId = parseAgreementId(url)
