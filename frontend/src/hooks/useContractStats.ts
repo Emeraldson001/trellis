@@ -2,8 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { xdr } from '@stellar/stellar-sdk'
 import { CONTRACT_ID, RPC_URL, getIndexerUrl } from '../lib/config'
 import { openIndexerStream } from '../lib/indexer'
-import { getRecentStartLedger, isRetentionWindowError, RETENTION_WINDOW_MESSAGE } from '../lib/eventWindow'
-import { CREATED_EVENT_SYMBOL, LOCKED_EVENT_SYMBOL } from '../lib/eventSymbols'
+import { isRetentionWindowError, RETENTION_WINDOW_MESSAGE } from '../lib/eventWindow'
 
 export interface ContractStats {
   agreements: number

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { xdr } from '@stellar/stellar-sdk'
 import { CONTRACT_ID, RPC_URL, getIndexerUrl } from '../lib/config'
-import { hexToBytes } from '../lib/format'
 import { fetchIndexedEvents, openIndexerStream } from '../lib/indexer'
 import { getRecentStartLedger, isRetentionWindowError, RETENTION_WINDOW_MESSAGE } from '../lib/eventWindow'
 import type { RawEventResponse } from '../lib/soroban'
@@ -50,6 +49,17 @@ const BASE_POLL_INTERVAL_MS = 10_000 // Base poll interval: 10 seconds
 const MAX_POLL_INTERVAL_MS = 60_000  // Cap backoff at 60 seconds
 const FETCH_TIMEOUT_MS = 30_000     // Per-request timeout: 30 seconds
 
+const EVENT_TYPE_MAP: Record<string, string> = {
+  trlls_crte: 'agreement_created',
+  trlls_lckd: 'funds_locked',
+  trlls_sbmt: 'work_submitted',
+  trlls_rlsd: 'funds_released',
+  trlls_dspt: 'dispute_raised',
+  trlls_rslv: 'milestone_resolved',
+  trlls_cncl: 'milestone_cancelled',
+  trlls_ttle: 'ttl_extended',
+}
+
 /**
  * Fetch and parse contract events for a specific agreement.
  *
@@ -73,43 +83,18 @@ export function useAgreementEvents(agreementId: string | null) {
   const failureCount = useRef(0)
   // Holds the scheduled timer handle so we can cancel it on unmount.
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // Signals that the component has unmounted — used to suppress state updates.
-  const unmountedRef = useRef(false)
-  // True while events are being delivered by the indexer relay rather than
-  // by direct RPC polling; decides which source `refetch` hits.
-  const relayActiveRef = useRef(false)
+  const refetchRef = useRef<(() => void) | null>(null)
 
   const fetchEvents = useCallback(
-    async (signal: AbortSignal): Promise<boolean> => {
-      if (!agreementId) return true // treat no-id as "success" (no-op)
+    async (signal: AbortSignal) => {
+      if (!agreementId || signal.aborted) return
 
-      // Guard state updates for unmounted components
-      if (!unmountedRef.current) {
-        setIsLoading(true)
-        setError(null)
-      }
+      setIsLoading(true)
+      setError(null)
 
-      // Combine the caller's signal with a per-request timeout signal.
-      const timeoutId = setTimeout(() => {
-        /* The fetch API will reject once the timeout AbortController fires. */
-      }, FETCH_TIMEOUT_MS)
       const timeoutController = new AbortController()
-      const timeoutHandle = setTimeout(
-        () => timeoutController.abort(),
-        FETCH_TIMEOUT_MS,
-      )
-
-      // Merge two abort signals: unmount signal + timeout signal.
-      const mergedSignal = (() => {
-        const ac = new AbortController()
-        signal.addEventListener('abort', () => ac.abort(), { once: true })
-        timeoutController.signal.addEventListener('abort', () => ac.abort(), {
-          once: true,
-        })
-        return ac.signal
-      })()
-
-      clearTimeout(timeoutId)
+      const timeoutHandle = setTimeout(() => timeoutController.abort(), FETCH_TIMEOUT_MS)
+      const mergedSignal = AbortSignal.any([signal, timeoutController.signal])
 
       try {
         // Encode agreement_id topic filter. Events are published with topics
@@ -157,35 +142,25 @@ export function useAgreementEvents(agreementId: string | null) {
         const rawEvents: unknown[] = json.result?.events || []
         const parsed = toAgreementEvents(rawEvents, agreementId)
 
-        if (!unmountedRef.current) {
-          setEvents(parsed)
-          setIsLoading(false)
-        }
+        if (signal.aborted) return
 
+        setEvents(parsed)
+        setIsLoading(false)
         failureCount.current = 0
-        return true
       } catch (err) {
-        clearTimeout(timeoutHandle)
-
         // Abort errors (unmount or timeout) are not user-facing failures.
-        if (
-          signal.aborted ||
-          (err instanceof Error && err.name === 'AbortError')
-        ) {
-          if (!unmountedRef.current) setIsLoading(false)
-          return false
+        if (signal.aborted) return
+        if (err instanceof Error && err.name === 'AbortError') {
+          setIsLoading(false)
+          return
         }
 
         console.error('[useAgreementEvents] Failed to fetch:', err)
 
-        if (!unmountedRef.current) {
-          const message = err instanceof Error ? err.message : 'Failed to fetch events'
-          setError(isRetentionWindowError(message) ? RETENTION_WINDOW_MESSAGE : message)
-          setIsLoading(false)
-        }
-
+        const message = err instanceof Error ? err.message : 'Failed to fetch events'
+        setError(isRetentionWindowError(message) ? RETENTION_WINDOW_MESSAGE : message)
+        setIsLoading(false)
         failureCount.current += 1
-        return false
       } finally {
         clearTimeout(timeoutHandle)
       }
@@ -194,92 +169,120 @@ export function useAgreementEvents(agreementId: string | null) {
   )
 
   useEffect(() => {
-    unmountedRef.current = false
     failureCount.current = 0
 
     const controller = new AbortController()
     let closeStream: (() => void) | null = null
 
-    /**
-     * Recursive polling: schedule the next poll only after the current fetch
-     * resolves, preventing concurrent in-flight requests.  Back off linearly on
-     * repeated failures (each failure adds one base interval, capped at max).
-     */
-    const schedule = (delayMs: number) => {
-      timerRef.current = setTimeout(async () => {
-        if (controller.signal.aborted) return
-        await fetchEvents(controller.signal)
-        if (!controller.signal.aborted) {
-          const nextDelay = Math.min(
-            BASE_POLL_INTERVAL_MS +
-              failureCount.current * BASE_POLL_INTERVAL_MS,
-            MAX_POLL_INTERVAL_MS,
-          )
-          schedule(nextDelay)
-        }
-      }, delayMs)
+    let relayActive = false
+    let polling = false
+
+    const poll = async () => {
+      if (controller.signal.aborted || polling) return
+      polling = true
+      await fetchEvents(controller.signal)
+      polling = false
+      if (controller.signal.aborted) return
+
+      const nextDelay = Math.min(
+        BASE_POLL_INTERVAL_MS * (1 + failureCount.current),
+        MAX_POLL_INTERVAL_MS,
+      )
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null
+        void poll()
+      }, nextDelay)
     }
 
-    const startPolling = () => {
-      relayActiveRef.current = false
-      if (controller.signal.aborted) return
-      // Fire immediately (0 ms delay), then recurse.
-      schedule(0)
+    const restartPolling = () => {
+      relayActive = false
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current)
+        timerRef.current = null
+      }
+      failureCount.current = 0
+      void poll()
+    }
+
+    refetchRef.current = () => {
+      if (controller.signal.aborted || !agreementId) return
+      if (!relayActive) {
+        restartPolling()
+        return
+      }
+
+      setError(null)
+      void fetchIndexedEvents(agreementId, controller.signal)
+        .then((raw) => {
+          if (!controller.signal.aborted) setEvents(toAgreementEvents(raw, agreementId))
+        })
+        .catch((err: unknown) => {
+          if (!controller.signal.aborted) {
+            setError(err instanceof Error ? err.message : 'Failed to fetch events')
+          }
+        })
     }
 
     if (agreementId && getIndexerUrl()) {
-      relayActiveRef.current = true
+      relayActive = true
       setIsLoading(true)
       setError(null)
       closeStream = openIndexerStream(
         `/stream/events?agreementId=${encodeURIComponent(agreementId)}`,
         {
           snapshot: (data) => {
-            if (unmountedRef.current) return
+            if (controller.signal.aborted) return
             setEvents(toAgreementEvents(eventsOf(data), agreementId))
             setIsLoading(false)
           },
           events: (data) => {
-            if (unmountedRef.current) return
+            if (controller.signal.aborted) return
             const fresh = toAgreementEvents(eventsOf(data), agreementId)
             setEvents((prev) => mergeEvents(prev, fresh))
           },
         },
-        startPolling,
+        restartPolling,
       )
-    } else {
-      startPolling()
+    } else if (agreementId) {
+      restartPolling()
     }
 
     return () => {
-      unmountedRef.current = true
+      refetchRef.current = null
       controller.abort()
       closeStream?.()
       if (timerRef.current !== null) {
         clearTimeout(timerRef.current)
       }
     }
-  }, [agreementId, fetchEvents])
+  }, [fetchEvents, agreementId])
 
-  const refetch = useCallback(async () => {
-    if (!agreementId) return
-    const controller = new AbortController()
-    await fetchEvents(controller.signal)
-  }, [agreementId, fetchEvents])
+  const refetch = useCallback(() => refetchRef.current?.(), [])
 
   return { events, isLoading, error, refetch }
 }
 
-/**
- * Resolve a `trls_*` topic symbol to its event type name.  Returns 'unknown'
- * only for symbols the contract does not emit.
- */
-export function parseEventType(symbol: string): string {
-  try {
-    return EVENT_TYPE_MAP[symbol] ?? 'unknown'
-  } catch {
-    return 'unknown'
-  }
+/** Parses raw RPC-shaped events (from RPC or the indexer), newest first. */
+function toAgreementEvents(rawEvents: unknown[], agreementId: string): AgreementEvent[] {
+  const parsed: AgreementEvent[] = rawEvents
+    .filter(isValidEventResponse)
+    .map((e: RawEventResponse) => {
+      const eventType = parseEventType(e)
+      const id = (e as { id?: unknown }).id
+
+      return {
+        ...(typeof id === 'string' ? { id } : {}),
+        type: eventType,
+        ledger: e.ledger || 0,
+        txHash: e.txHash || '',
+        timestamp: e.ledgerClosedAt || new Date().toISOString(),
+        agreementId,
+      }
+    })
+
+  // Sort by ledger descending (newest first)
+  parsed.sort((a, b) => b.ledger - a.ledger)
+  return parsed
 }
 
 function eventsOf(data: unknown): unknown[] {
@@ -301,36 +304,18 @@ function mergeEvents(prev: AgreementEvent[], fresh: AgreementEvent[]): Agreement
   return merged
 }
 
-function toAgreementEvents(rawEvents: unknown[], agreementId: string): AgreementEvent[] {
-  const parsed: AgreementEvent[] = []
-  for (const raw of rawEvents) {
-    if (!isValidEventResponse(raw)) continue
-    const event = raw as RawEventResponse
-    const symbol = extractTopicSymbol(event)
-    if (!symbol) continue
-    const type = parseEventType(symbol)
-    parsed.push({
-      id: event.id,
-      type,
-      ledger: event.ledger,
-      txHash: event.txHash,
-      timestamp: event.ledgerClosedAt ?? '',
-      agreementId,
-    })
-  }
-  return parsed
-}
-
-function extractTopicSymbol(event: RawEventResponse): string | null {
-  const topics = event.topic
-  if (!Array.isArray(topics) || topics.length === 0) return null
+function parseEventType(event: RawEventResponse): string {
   try {
-    const scVal = xdr.ScVal.fromXDR(topics[0], 'base64')
-    if (scVal.switch().name === 'scvSymbol') {
-      return scVal.sym().toString()
+    const topics = event.topic || []
+    if (topics.length > 0 && typeof topics[0] === 'string') {
+      const firstTopic = xdr.ScVal.fromXDR(topics[0], 'base64')
+      if (firstTopic.switch().name === 'scvSymbol') {
+        const symbol = firstTopic.sym().toString()
+        return EVENT_TYPE_MAP[symbol] ?? symbol
+      }
     }
   } catch {
-    return null
+    // Fallback to unknown
   }
-  return null
+  return parsed
 }

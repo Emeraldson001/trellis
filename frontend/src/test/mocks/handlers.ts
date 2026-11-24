@@ -1,9 +1,5 @@
 import { http, HttpResponse } from 'msw'
-import { nativeToScVal } from '@stellar/stellar-sdk'
-import {
-  AGREEMENT_CREATED_SYMBOL,
-  MILESTONE_LOCKED_SYMBOL,
-} from '../../lib/contractEvents'
+import { CONTRACT_ID, RPC_URL } from '../../lib/config'
 
 const RPC_URL = 'https://soroban-testnet.stellar.org'
 
@@ -38,8 +34,40 @@ export const handlers = [
     if (body.method === 'getLatestLedger') {
       return HttpResponse.json({
         jsonrpc: '2.0',
-        id: 1,
-        result: { sequence: 1000, protocolVersion: 21 },
+        id: body.id,
+        result: {
+          events: [
+            {
+              type: 'contract',
+              ledger: 1000,
+              ledgerClosedAt: '2024-01-01T00:00:00Z',
+              contractId: CONTRACT_ID,
+              id: '0001',
+              pagingToken: '0001',
+              topic: ['AAAADwAAAAdjcmVhdGVk'],
+              value: {
+                xdr: 'AAAABAAAAAEAAAACAAAADwAAAAdhY2NvdW50AAAAAAAA',
+              },
+              inSuccessfulContractCall: true,
+              txHash: 'abc123',
+            },
+            {
+              type: 'contract',
+              ledger: 1001,
+              ledgerClosedAt: '2024-01-01T00:01:00Z',
+              contractId: CONTRACT_ID,
+              id: '0002',
+              pagingToken: '0002',
+              topic: ['AAAADwAAAAZsb2NrZWQ='],
+              value: {
+                xdr: 'AAAABAAAAAEAAAACAAAADwAAAAdhY2NvdW50AAAAAAAA',
+              },
+              inSuccessfulContractCall: true,
+              txHash: 'def456',
+            },
+          ],
+          latestLedger: 1001,
+        },
       })
     }
 

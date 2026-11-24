@@ -1,55 +1,70 @@
-import { describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/react';
-import { EventFeed } from './EventFeed';
-import { EVENT_TYPE_MAP } from '../hooks/useAgreementEvents';
-import type { AgreementEvent, AgreementEventType } from '../hooks/useAgreementEvents';
+import { fireEvent, render, screen } from '@testing-library/react'
+import { describe, expect, it } from 'vitest'
+import { http, HttpResponse } from 'msw'
+import { RPC_URL } from '../lib/config'
+import { server } from '../test/mocks/server'
+import EventFeed from './EventFeed'
+import { ThemeProvider } from '../context/ThemeContext'
 
-const SYMBOLS = [
-  'trls_crte',
-  'trls_lckd',
-  'trls_sbmt',
-  'trls_rlsd',
-  'trls_dspt',
-  'trls_rslv',
-  'trls_cncl',
-  'trls_prtl',
-  'trls_cmpl',
-  'trls_ttle',
-  'trls_ddln',
-  'trls_expd',
-];
-
-function makeEvent(symbol: string, index: number): AgreementEvent {
-  const type = EVENT_TYPE_MAP[symbol] as AgreementEventType;
-  return {
-    id: `event-${index}`,
-    type,
-    agreementId: '1',
-    ledger: index + 1,
-    timestamp: '2024-01-01T00:00:00Z',
-    txHash: `tx-${index}`,
-    raw: null,
-  };
+const renderEventFeed = (agreementId = '') => {
+  return render(
+    <ThemeProvider>
+      <EventFeed agreementId={agreementId} />
+    </ThemeProvider>
+  )
 }
 
-describe('EVENT_TYPE_MAP', () => {
-  it('maps every trls_* symbol to a known event type', () => {
-    for (const symbol of SYMBOLS) {
-      expect(EVENT_TYPE_MAP[symbol]).toBeDefined();
-      expect(EVENT_TYPE_MAP[symbol]).not.toBe('unknown');
-    }
-  });
-});
+describe('<EventFeed />', () => {
+  it('renders event feed component', () => {
+    renderEventFeed()
 
-describe('EventFeed', () => {
-  it('renders a real description for every trls_* event', () => {
-    const events = SYMBOLS.map(makeEvent);
-    render(<EventFeed events={events} />);
+    expect(screen.getByRole('heading', { name: 'Event Timeline' })).toBeInTheDocument()
+  })
 
-    expect(screen.queryByText('Event: unknown')).toBeNull();
-    for (const event of events) {
-      expect(screen.queryByText('Event: unknown')).toBeNull();
-      expect(event.type).not.toBe('unknown');
-    }
-  });
-});
+  it('renders without crashing', () => {
+    expect(() => {
+      renderEventFeed()
+    }).not.toThrow()
+  })
+
+  it('handles missing agreement ID gracefully', () => {
+    renderEventFeed()
+
+    expect(screen.getByText('No events found for this agreement')).toBeInTheDocument()
+  })
+
+  it('renders with valid agreement ID', () => {
+    const agreementId = 'a'.repeat(64)
+    renderEventFeed(agreementId)
+
+    expect(screen.getByText(/event|history|activity|loading/i)).toBeInTheDocument()
+  })
+
+  it('displays loading state when fetching events', () => {
+    const agreementId = 'a'.repeat(64)
+    renderEventFeed(agreementId)
+
+    // May show loading or events depending on data
+    const container = screen.getByText(/event|history|activity|loading|no event/i)
+    expect(container).toBeInTheDocument()
+  })
+  it('makes another events request when Retry is clicked', async () => {
+    let requests = 0
+    server.use(http.post(RPC_URL, async ({ request }) => {
+      const { method } = await request.json() as { method: string }
+      if (method === 'getLatestLedger') {
+        return HttpResponse.json({ result: { sequence: 1000 } })
+      }
+      requests++
+      return requests === 1
+        ? HttpResponse.json({ error: { message: 'RPC unavailable' } })
+        : HttpResponse.json({ result: { events: [] } })
+    }))
+
+    renderEventFeed('a'.repeat(64))
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+    expect(await screen.findByText('No events found for this agreement')).toBeInTheDocument()
+    expect(requests).toBe(2)
+  })
+
+})

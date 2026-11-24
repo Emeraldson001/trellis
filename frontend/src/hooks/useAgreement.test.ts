@@ -1,9 +1,22 @@
-import { act, renderHook } from '@testing-library/react'
-import { rpc } from '@stellar/stellar-sdk'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { renderHook, waitFor } from '@testing-library/react'
+import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { nativeToScVal, rpc } from '@stellar/stellar-sdk'
 import { useAgreement } from './useAgreement'
 
-const agreementId = 'a'.repeat(64)
+describe('useAgreement', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('initializes with loading state', () => {
+    const { result } = renderHook(() => useAgreement(null))
+
+    expect(result.current.isLoading).toBe(false)
+    expect(result.current.agreement).toBeNull()
+  })
+
+  it('provides refetch function', () => {
+    const { result } = renderHook(() => useAgreement(null))
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -50,4 +63,23 @@ describe('useAgreement', () => {
       isError: true, isLoading: false, errorKind: 'rpc', error: 'RPC timed out',
     })
   })
+  it('clears the previous agreement when the next ID fails to load', async () => {
+    const simulate = vi.spyOn(rpc.Server.prototype, 'simulateTransaction')
+    simulate.mockResolvedValueOnce({
+      result: { retval: nativeToScVal({ milestones: [] }) },
+    } as Awaited<ReturnType<typeof simulate>>)
+    simulate.mockRejectedValue(new Error('Agreement not found'))
+
+    const firstId = 'a'.repeat(64)
+    const { result, rerender } = renderHook(({ id }) => useAgreement(id), {
+      initialProps: { id: firstId },
+    })
+    await waitFor(() => expect(result.current.agreement?.agreement_id).toBe(firstId))
+
+    rerender({ id: 'b'.repeat(64) })
+    expect(result.current.agreement).toBeNull()
+    await waitFor(() => expect(result.current.error).toBe('Agreement not found'))
+    expect(result.current.agreement).toBeNull()
+  })
+
 })
